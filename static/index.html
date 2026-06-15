@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Nifty 50 — Closing Price Estimator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:      #0e1117;
+    --surface: #161b27;
+    --card:    #1c2232;
+    --border:  #2a3347;
+    --text:    #e2e8f0;
+    --muted:   #7a8499;
+    --green:   #22c55e;
+    --red:     #ef4444;
+    --amber:   #f59e0b;
+    --blue:    #3b82f6;
+    --purple:  #a78bfa;
+    --font:    'Segoe UI', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; }
+
+  /* ── HEADER ── */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 13px 22px; background: var(--surface); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .hdr-left { display: flex; align-items: center; gap: 10px; }
+  header h1 { font-size: 15px; font-weight: 600; }
+  .mode-pill {
+    font-size: 10px; font-weight: 700; padding: 2px 9px; border-radius: 10px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .mode-ltp  { background: rgba(167,139,250,.15); color: var(--purple); border: 1px solid rgba(167,139,250,.3); }
+  .mode-vwap { background: rgba(34,197,94,.15);   color: var(--green);  border: 1px solid rgba(34,197,94,.3); }
+  .hdr-right { display: flex; align-items: center; gap: 14px; }
+  .ts { font-size: 11px; color: var(--muted); }
+  .ws-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--red);
+    box-shadow: 0 0 6px var(--red); transition: background .3s, box-shadow .3s;
+  }
+  .ws-dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+  /* ── SETTLEMENT BANNER ── */
+  .banner {
+    background: rgba(245,158,11,.08); border-bottom: 1px solid rgba(245,158,11,.2);
+    color: var(--amber); font-size: 11px; font-weight: 600;
+    padding: 6px 22px; text-align: center; display: none;
+  }
+  .banner.visible { display: block; }
+
+  /* ── KPIs ── */
+  .kpi-row {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 12px; padding: 16px 22px 0;
+  }
+  .kpi {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 15px 16px;
+  }
+  .kpi-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 5px; }
+  .kpi-val { font-size: 24px; font-weight: 700; line-height: 1; }
+  .kpi-sub { font-size: 10px; color: var(--muted); margin-top: 4px; min-height: 14px; }
+  .g  { color: var(--green); }
+  .r  { color: var(--red); }
+  .b  { color: var(--blue); }
+  .am { color: var(--amber); }
+  .mu { color: var(--muted); }
+  .prog-wrap { background: var(--border); border-radius: 3px; height: 3px; margin-top: 8px; }
+  .prog-bar  { height: 3px; border-radius: 3px; background: var(--blue); transition: width .4s; }
+
+  /* ── BODY GRID ── */
+  .body-grid {
+    display: grid; grid-template-columns: 1fr 360px;
+    gap: 12px; padding: 12px 22px 24px;
+  }
+
+  /* ── CARD ── */
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .card-hdr {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    font-size: 10px; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  .tag {
+    font-size: 10px; padding: 2px 8px; border-radius: 8px; font-weight: 600;
+    background: rgba(59,130,246,.1); color: var(--blue);
+    border: 1px solid rgba(59,130,246,.2);
+  }
+
+  /* ── TABLE ── */
+  .tbl-wrap { overflow-y: auto; max-height: 530px; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    position: sticky; top: 0; background: var(--card);
+    padding: 8px 11px; text-align: right; font-size: 10px;
+    color: var(--muted); text-transform: uppercase; letter-spacing: .4px;
+    border-bottom: 1px solid var(--border);
+  }
+  thead th:first-child { text-align: left; }
+  tbody tr { border-bottom: 1px solid rgba(42,51,71,.4); }
+  tbody tr:hover { background: rgba(59,130,246,.04); }
+  tbody td { padding: 7px 11px; text-align: right; }
+  tbody td:first-child { text-align: left; }
+  .sym { font-weight: 600; font-size: 12px; }
+  .num { font-variant-numeric: tabular-nums; }
+  .pill-sm {
+    font-size: 9px; padding: 1px 6px; border-radius: 6px; font-weight: 700;
+  }
+  .pill-vwap { background: rgba(34,197,94,.1);  color: var(--green); }
+  .pill-ltp  { background: rgba(122,132,153,.1); color: var(--muted); }
+
+  /* ── RIGHT PANEL ── */
+  .right-panel { display: flex; flex-direction: column; gap: 12px; }
+  .chart-wrap  { padding: 12px 14px; }
+
+  /* ── TOP MOVERS ── */
+  .mover {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 14px; border-bottom: 1px solid rgba(42,51,71,.4);
+  }
+  .mover:last-child { border-bottom: none; }
+  .mover-sym { font-weight: 600; font-size: 12px; }
+  .mover-wt  { font-size: 10px; color: var(--muted); margin-left: 5px; }
+  .mover-pct { font-size: 13px; font-weight: 700; }
+  .mover-pts { font-size: 10px; color: var(--muted); margin-left: 8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hdr-left">
+    <h1>Nifty 50 — Closing Price Estimator</h1>
+    <span id="modePill" class="mode-pill mode-ltp">LTP</span>
+  </div>
+  <div class="hdr-right">
+    <span class="ts" id="ts">--:--:--</span>
+    <span id="wsDot" class="ws-dot" title="WebSocket status"></span>
+  </div>
+</header>
+
+<div id="banner" class="banner">
+  ⏱ Settlement window active (3:00–3:30 PM) — VWAP accumulating. Projected close mirrors NSE's official method.
+</div>
+
+<!-- KPIs -->
+<div class="kpi-row">
+  <div class="kpi">
+    <div class="kpi-lbl">Projected Close</div>
+    <div class="kpi-val b" id="kvProj">—</div>
+    <div class="kpi-sub" id="kvProjDiff"></div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-lbl">Nifty Spot LTP</div>
+    <div class="kpi-val" id="kvSpot">—</div>
+    <div class="kpi-sub" id="kvSpotDiff"></div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-lbl">Prev Close (T-1)</div>
+    <div class="kpi-val am" id="kvPrev">—</div>
+    <div class="kpi-sub">NSE official close</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-lbl">Coverage</div>
+    <div class="kpi-val" id="kvCov">—</div>
+    <div class="kpi-sub" id="kvCovSub">stocks with live data</div>
+    <div class="prog-wrap"><div class="prog-bar" id="progBar" style="width:0%"></div></div>
+  </div>
+</div>
+
+<!-- Body -->
+<div class="body-grid">
+
+  <!-- Stock table -->
+  <div class="card">
+    <div class="card-hdr">
+      Constituent Breakdown
+      <span class="tag" id="wtTag">—</span>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Stock</th>
+            <th>Wt%</th>
+            <th>Prev Close</th>
+            <th>LTP</th>
+            <th>VWAP</th>
+            <th>Chg%</th>
+            <th>Contrib pts</th>
+            <th>Mode</th>
+          </tr>
+        </thead>
+        <tbody id="tbody">
+          <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:32px;">Connecting...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Right panel -->
+  <div class="right-panel">
+
+    <!-- Sparkline chart -->
+    <div class="card">
+      <div class="card-hdr">Projected Close — Live History <span class="tag">last 120 pts</span></div>
+      <div class="chart-wrap">
+        <canvas id="sparkChart" height="180"></canvas>
+      </div>
+    </div>
+
+    <!-- Top movers -->
+    <div class="card">
+      <div class="card-hdr">Top 5 Contributors</div>
+      <div id="movers"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────
+// BRIDGE is empty string = same origin (Flask serves both HTML and API)
+const BRIDGE   = '';
+const POLL_MS  = 5000;
+
+// ── Chart ─────────────────────────────────────────────────────────────────
+const sparkCtx = document.getElementById('sparkChart').getContext('2d');
+const spark = new Chart(sparkCtx, {
+  type: 'line',
+  data: {
+    labels:   [],
+    datasets: [{
+      data:            [],
+      borderColor:     '#3b82f6',
+      backgroundColor: 'rgba(59,130,246,0.07)',
+      borderWidth:     2,
+      pointRadius:     0,
+      fill:            true,
+      tension:         0.3,
+    }]
+  },
+  options: {
+    responsive: true,
+    animation:  false,
+    plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+    scales: {
+      x: { display: false },
+      y: {
+        ticks: { color: '#7a8499', font: { size: 10 },
+                 callback: v => Number(v).toLocaleString('en-IN') },
+        grid:  { color: 'rgba(42,51,71,0.5)' },
+      }
+    }
+  }
+});
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+const fmt = (v, d=2) =>
+  v == null ? '—' : Number(v).toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+const chgHtml = (v) => {
+  if (v == null) return '<span class="mu">—</span>';
+  const cls  = v > 0 ? 'g' : v < 0 ? 'r' : 'mu';
+  const sign = v > 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${v.toFixed(2)}%</span>`;
+};
+
+// ── Render ────────────────────────────────────────────────────────────────
+function render(d) {
+  // Header
+  document.getElementById('ts').textContent = d.timestamp || '--:--:--';
+  document.getElementById('wsDot').className = 'ws-dot' + (d.ws_connected ? ' ok' : '');
+
+  // Mode pill + banner
+  const inWin = d.in_settlement;
+  const pill  = document.getElementById('modePill');
+  pill.textContent = inWin ? 'VWAP' : 'LTP';
+  pill.className   = 'mode-pill ' + (inWin ? 'mode-vwap' : 'mode-ltp');
+  document.getElementById('banner').classList.toggle('visible', inWin);
+
+  // KPIs
+  const proj = d.projected_close;
+  const prev = d.prev_nifty_close;
+  const spot = d.nifty_spot_ltp;
+
+  document.getElementById('kvPrev').textContent = fmt(prev);
+  document.getElementById('kvSpot').textContent = fmt(spot);
+
+  if (proj) {
+    document.getElementById('kvProj').textContent = fmt(proj);
+    if (prev) {
+      const diff = proj - prev;
+      const pct  = diff / prev * 100;
+      const cls  = diff >= 0 ? 'g' : 'r';
+      const sign = diff >= 0 ? '+' : '';
+      document.getElementById('kvProjDiff').innerHTML =
+        `<span class="${cls}">${sign}${fmt(diff)} (${sign}${pct.toFixed(2)}%)</span>`;
+      document.getElementById('kvProj').className = `kpi-val ${diff >= 0 ? 'g' : 'r'}`;
+    }
+  }
+  if (spot && prev) {
+    const diff = spot - prev;
+    const pct  = diff / prev * 100;
+    const cls  = diff >= 0 ? 'g' : 'r';
+    const sign = diff >= 0 ? '+' : '';
+    document.getElementById('kvSpotDiff').innerHTML =
+      `<span class="${cls}">${sign}${fmt(diff)} (${sign}${pct.toFixed(2)}%)</span>`;
+  }
+
+  const total = d.stocks_total || 50;
+  const ready = d.stocks_ready || 0;
+  document.getElementById('kvCov').textContent = `${ready} / ${total}`;
+  document.getElementById('wtTag').textContent  = `${(d.weight_with_data||0).toFixed(1)}% weight live`;
+  document.getElementById('progBar').style.width = `${(ready/total)*100}%`;
+
+  // Sparkline — use history from backend
+  if (d.history && d.history.length) {
+    spark.data.labels   = d.history.map(h => h.t);
+    spark.data.datasets[0].data = d.history.map(h => h.v);
+    spark.update('none');
+  }
+
+  // Stock table
+  const stocks = d.stocks || [];
+  const tbody  = document.getElementById('tbody');
+  if (!stocks.length) return;
+
+  tbody.innerHTML = stocks.map(s => {
+    const price  = (inWin && s.vwap) ? s.vwap : s.ltp;
+    const chgPct = (price && s.prev_close)
+      ? (price - s.prev_close) / s.prev_close * 100 : null;
+    // Contribution in index points vs. if this stock hadn't moved
+    const contribPts = (s.ratio != null && prev)
+      ? ((s.ratio - 1) * (s.weight / 100) * prev) : null;
+    const cls = chgPct == null ? 'mu' : chgPct > 0 ? 'g' : chgPct < 0 ? 'r' : 'mu';
+
+    return `<tr>
+      <td class="sym">${s.symbol}</td>
+      <td class="num mu">${s.weight.toFixed(2)}</td>
+      <td class="num">${fmt(s.prev_close)}</td>
+      <td class="num">${s.ltp ? fmt(s.ltp) : '<span class="mu">—</span>'}</td>
+      <td class="num">${s.vwap ? fmt(s.vwap) : '<span class="mu">—</span>'}</td>
+      <td>${chgHtml(chgPct)}</td>
+      <td class="${cls} num">${contribPts != null ? (contribPts>=0?'+':'')+contribPts.toFixed(2) : '<span class="mu">—</span>'}</td>
+      <td><span class="pill-sm ${s.in_window ? 'pill-vwap' : 'pill-ltp'}">${s.in_window ? 'VWAP' : 'LTP'}</span></td>
+    </tr>`;
+  }).join('');
+
+  // Top movers (by absolute contribution)
+  const movers = stocks
+    .filter(s => s.ratio != null && s.prev_close)
+    .map(s => ({
+      ...s,
+      contribPts: (s.ratio - 1) * (s.weight / 100) * (prev || 0),
+      chgPct:     ((s.vwap || s.ltp || s.prev_close) - s.prev_close) / s.prev_close * 100,
+    }))
+    .sort((a, b) => Math.abs(b.contribPts) - Math.abs(a.contribPts))
+    .slice(0, 5);
+
+  document.getElementById('movers').innerHTML = movers.map(m => {
+    const cls  = m.contribPts >= 0 ? 'g' : 'r';
+    const sign = m.contribPts >= 0 ? '+' : '';
+    return `<div class="mover">
+      <div>
+        <span class="mover-sym">${m.symbol}</span>
+        <span class="mover-wt">${m.weight.toFixed(1)}%</span>
+      </div>
+      <div>
+        <span class="mover-pct ${cls}">${m.chgPct>=0?'+':''}${m.chgPct.toFixed(2)}%</span>
+        <span class="mover-pts">${sign}${m.contribPts.toFixed(1)} pts</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Poll ──────────────────────────────────────────────────────────────────
+async function poll() {
+  try {
+    const r = await fetch(`${BRIDGE}/close-estimate`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    render(await r.json());
+  } catch(e) {
+    document.getElementById('wsDot').className = 'ws-dot';
+    console.warn('Poll error:', e.message);
+  }
+}
+
+poll();
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>
