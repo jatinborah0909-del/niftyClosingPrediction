@@ -194,7 +194,34 @@ def resolve_tokens(kite_client: KiteConnect) -> dict:
 
     NIFTY50            = resolved
     NIFTY_INDEX_TOKEN   = index_token
+
+    _normalize_weights()
     return resolved
+
+
+def _normalize_weights():
+    """
+    Rescale all weights in NIFTY50 so they sum to exactly 100%.
+
+    This matters a lot: the projection formula computes
+        weighted_ratio = Σ (weight_i / 100) × ratio_i
+    which is only correct if Σ weight_i == 100. In practice it never is exactly
+    100 — NIFTY50_WEIGHTS itself sums to ~100.45%, and any symbol that fails to
+    resolve (renamed/delisted) shrinks the total further. Without normalization,
+    every unresolved or excluded stock's weight effectively vanishes instead of
+    being treated as "no move", which silently biases the projection — this is
+    exactly what caused a -1.0% projected move while the real stocks averaged
+    +0.46% and the actual Nifty spot was +0.30%.
+    """
+    global NIFTY50
+    total = sum(meta["weight"] for meta in NIFTY50.values())
+    if total <= 0:
+        return
+    if abs(total - 100.0) < 1e-9:
+        return
+    for meta in NIFTY50.values():
+        meta["weight"] = meta["weight"] * 100.0 / total
+    print(f"[resolve_tokens] Normalized weights: raw total was {total:.2f}% -> rescaled to 100.00%")
 
 # ── FLASK ─────────────────────────────────────────────────────────────────────
 
