@@ -148,6 +148,8 @@
   ⏱ Settlement window active (3:00–3:30 PM) — VWAP accumulating. Projected close mirrors NSE's official method.
 </div>
 
+<div id="flagBanner" class="banner" style="background:rgba(239,68,68,.08);border-bottom-color:rgba(239,68,68,.2);color:var(--red);"></div>
+
 <!-- KPIs -->
 <div class="kpi-row">
   <div class="kpi">
@@ -283,6 +285,17 @@ function render(d) {
   pill.textContent = inWin ? 'VWAP' : 'LTP';
   pill.className   = 'mode-pill ' + (inWin ? 'mode-vwap' : 'mode-ltp');
   document.getElementById('banner').classList.toggle('visible', inWin);
+
+  // Flagged stocks warning (bad token/price ratio outside ±15% band)
+  const flagBanner = document.getElementById('flagBanner');
+  const flagged = d.flagged || [];
+  if (flagged.length) {
+    const names = flagged.map(f => f.symbol).join(', ');
+    flagBanner.textContent = `⚠ Excluded from projection — ratio outside sanity band: ${names}. Check /tokens for resolution issues.`;
+    flagBanner.classList.add('visible');
+  } else {
+    flagBanner.classList.remove('visible');
+  }
 
   // KPIs
   const proj = d.projected_close;
