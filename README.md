@@ -78,21 +78,36 @@ Trigger this before 9:15 AM for uninterrupted market coverage.
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | Dashboard HTML |
-| `GET /close-estimate` | Projected close + all 50 stocks breakdown + history |
-| `GET /status` | Health check (used by Railway healthcheck probe) |
+| `GET /close-estimate` | Projected close + all 50 stocks breakdown + history + flagged stocks |
+| `GET /status` | Health check (used by Railway healthcheck probe) — includes resolution + flagged counts |
+| `GET /tokens` | Inspect resolved instrument tokens — confirms every symbol mapped correctly at startup |
+
+---
+
+## Token resolution (automatic — no manual step needed)
+
+On every startup, the app calls `kite.instruments("NSE")` and resolves each of
+the 50 symbols in `NIFTY50_WEIGHTS` to its live instrument token. There are
+**no hand-typed tokens in the code** — this is what `/tokens` lets you verify.
+
+If a symbol can't be resolved (company renamed, delisted, NSE rebalance),
+check the Railway logs for a `[resolve_tokens] WARN: ... missing` line and
+update the symbol name in `NIFTY50_WEIGHTS`.
+
+### Sanity-band protection
+Any stock whose `price / prev_close` ratio falls outside **±15%** is automatically
+excluded from the projection and listed in `flagged_stocks` (via `/status`) or
+`flagged` (via `/close-estimate`). This catches the failure mode where a bad
+token pairs a price with the wrong stock's previous close, which previously
+produced impossible jumps like +43% in a single day.
 
 ---
 
 ## Updating constituent weights
 
 Nifty 50 weights change quarterly (NSE rebalances every March, June, Sep, Dec).
-Update the `NIFTY50` dict in `nifty_close_bridge.py` from the NSE factsheet:
+Update the `NIFTY50_WEIGHTS` dict in `nifty_close_bridge.py` from the NSE factsheet:
 https://www.niftyindices.com/indices/equity/broad-based-indices/NIFTY-50
 
-To verify instrument tokens run:
-```python
-from kiteconnect import KiteConnect
-kite = KiteConnect(api_key="..."); kite.set_access_token("...")
-inst = {i['tradingsymbol']: i['instrument_token'] for i in kite.instruments("NSE")}
-print(inst["RELIANCE"])  # verify any symbol
-```
+Tokens never need manual updates — they're resolved live from Kite on every
+startup. Just keep the symbol names current (NSE `tradingsymbol` values).

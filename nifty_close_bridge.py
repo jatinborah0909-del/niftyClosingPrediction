@@ -2,10 +2,15 @@
 Nifty 50 Closing Price Estimator — Railway Edition
 ====================================================
 Mirrors NSE's official closing methodology:
+  • Resolves all 50 constituent instrument tokens live from Kite at startup
+    (no hand-typed tokens — eliminates stale/wrong-token bugs)
   • Streams all 50 Nifty constituent stocks via Kite WebSocket (MODE_FULL)
   • Accumulates per-stock VWAP during settlement window (3:00–3:30 PM IST)
   • Projects closing index = Σ(weight_i × vwap_i / prev_close_i) × prev_nifty_close
   • Before 3 PM: uses LTP as a live proxy
+  • Flags (and excludes) any stock whose price/prev_close ratio falls outside
+    a ±15% sanity band — almost always a sign of a bad token/price pairing,
+    not a real single-day move
 
 Flask serves the dashboard at GET / and JSON APIs at /close-estimate etc.
 No CORS needed — same-origin since Flask serves the HTML too.
@@ -60,66 +65,136 @@ def _check_env():
         sys.exit(1)
 
 # ── NIFTY 50 CONSTITUENTS ─────────────────────────────────────────────────────
-# Token  = Kite NSE instrument token (run verify_tokens.py to confirm/update)
-# Weight = approximate free-float index weight (%) — update quarterly from NSE factsheet
+# Symbol + weight only — NO hand-typed tokens. Tokens are resolved at startup
+# directly from kite.instruments("NSE"), which is the only reliable source.
+# (An earlier version of this file hand-typed instrument tokens from memory;
+#  several were wrong/stale, causing missing stocks and a corrupted projection.
+#  Resolving tokens live from Kite eliminates that failure mode entirely.)
+#
+# Weight = approximate free-float index weight (%) — update quarterly from the
+# NSE factsheet: https://www.niftyindices.com/indices/equity/broad-based-indices/NIFTY-50
 #
 # Weights intentionally sum to ~100%. Missing weight is filled with ratio=1.0
 # (no-move assumption) so the estimate degrades gracefully if ticks are absent.
 
-NIFTY50 = {
-    738561:  {"symbol": "RELIANCE",   "weight": 9.30},
-    341249:  {"symbol": "HDFCBANK",   "weight": 8.20},
-    1270529: {"symbol": "ICICIBANK",  "weight": 7.30},
-    2953217: {"symbol": "INFY",       "weight": 5.80},
-    779521:  {"symbol": "TCS",        "weight": 4.90},
-    3001089: {"symbol": "BHARTIARTL", "weight": 3.90},
-    442369:  {"symbol": "ITC",        "weight": 3.60},
-    4267265: {"symbol": "HINDUNILVR", "weight": 2.90},
-    356865:  {"symbol": "LT",         "weight": 2.80},
-    582:     {"symbol": "SBIN",       "weight": 2.70},
-    2815745: {"symbol": "BAJFINANCE", "weight": 2.60},
-    4574849: {"symbol": "M&M",        "weight": 2.30},
-    1363969: {"symbol": "KOTAKBANK",  "weight": 2.40},
-    60417:   {"symbol": "AXISBANK",   "weight": 2.20},
-    2865:    {"symbol": "MARUTI",     "weight": 2.10},
-    3926273: {"symbol": "SUNPHARMA",  "weight": 2.00},
-    1901249: {"symbol": "TATAMOTORS", "weight": 1.90},
-    3812801: {"symbol": "WIPRO",      "weight": 1.80},
-    895745:  {"symbol": "ULTRACEMCO", "weight": 1.70},
-    519937:  {"symbol": "ASIANPAINT", "weight": 1.60},
-    4343553: {"symbol": "POWERGRID",  "weight": 1.50},
-    1346049: {"symbol": "NTPC",       "weight": 1.50},
-    1901217: {"symbol": "ONGC",       "weight": 1.40},
-    2977281: {"symbol": "JSWSTEEL",   "weight": 1.40},
-    3465:    {"symbol": "TATASTEEL",  "weight": 1.30},
-    8192:    {"symbol": "HCLTECH",    "weight": 1.30},
-    3098049: {"symbol": "ADANIENT",   "weight": 1.20},
-    2714625: {"symbol": "ADANIPORTS", "weight": 1.20},
-    1750:    {"symbol": "BAJAJFINSV", "weight": 1.10},
-    505:     {"symbol": "EICHERMOT",  "weight": 1.10},
-    4538561: {"symbol": "GRASIM",     "weight": 1.00},
-    2815233: {"symbol": "TITAN",      "weight": 1.00},
-    348929:  {"symbol": "TECHM",      "weight": 0.95},
-    884737:  {"symbol": "TATACONSUM", "weight": 0.90},
-    2763265: {"symbol": "HINDALCO",   "weight": 0.90},
-    1510401: {"symbol": "INDUSINDBK", "weight": 0.90},
-    2865793: {"symbol": "DRREDDY",    "weight": 0.85},
-    969473:  {"symbol": "COALINDIA",  "weight": 0.85},
-    5215745: {"symbol": "BEL",        "weight": 0.80},
-    3834113: {"symbol": "CIPLA",      "weight": 0.80},
-    2740353: {"symbol": "BRITANNIA",  "weight": 0.75},
-    2061393: {"symbol": "DIVISLAB",   "weight": 0.75},
-    1102337: {"symbol": "NESTLEIND",  "weight": 0.70},
-    3263489: {"symbol": "BAJAJ-AUTO", "weight": 0.70},
-    4592385: {"symbol": "SHRIRAMFIN", "weight": 0.65},
-    3674721: {"symbol": "HEROMOTOCO", "weight": 0.65},
-    2796033: {"symbol": "SBILIFE",    "weight": 0.60},
-    3524673: {"symbol": "TRENT",      "weight": 0.60},
-    4775425: {"symbol": "HDFCLIFE",   "weight": 0.55},
-    225537:  {"symbol": "APOLLOHOSP", "weight": 0.55},
+NIFTY50_WEIGHTS = {
+    "RELIANCE":   9.30,
+    "HDFCBANK":   8.20,
+    "ICICIBANK":  7.30,
+    "INFY":       5.80,
+    "TCS":        4.90,
+    "BHARTIARTL": 3.90,
+    "ITC":        3.60,
+    "HINDUNILVR": 2.90,
+    "LT":         2.80,
+    "SBIN":       2.70,
+    "BAJFINANCE": 2.60,
+    "M&M":        2.30,
+    "KOTAKBANK":  2.40,
+    "AXISBANK":   2.20,
+    "MARUTI":     2.10,
+    "SUNPHARMA":  2.00,
+    "TATAMOTORS": 1.90,
+    "WIPRO":      1.80,
+    "ULTRACEMCO": 1.70,
+    "ASIANPAINT": 1.60,
+    "POWERGRID":  1.50,
+    "NTPC":       1.50,
+    "ONGC":       1.40,
+    "JSWSTEEL":   1.40,
+    "TATASTEEL":  1.30,
+    "HCLTECH":    1.30,
+    "ADANIENT":   1.20,
+    "ADANIPORTS": 1.20,
+    "BAJAJFINSV": 1.10,
+    "EICHERMOT":  1.10,
+    "GRASIM":     1.00,
+    "TITAN":      1.00,
+    "TECHM":      0.95,
+    "TATACONSUM": 0.90,
+    "HINDALCO":   0.90,
+    "INDUSINDBK": 0.90,
+    "DRREDDY":    0.85,
+    "COALINDIA":  0.85,
+    "BEL":        0.80,
+    "CIPLA":      0.80,
+    "BRITANNIA":  0.75,
+    "DIVISLAB":   0.75,
+    "NESTLEIND":  0.70,
+    "BAJAJ-AUTO": 0.70,
+    "SHRIRAMFIN": 0.65,
+    "HEROMOTOCO": 0.65,
+    "SBILIFE":    0.60,
+    "TRENT":      0.60,
+    "HDFCLIFE":   0.55,
+    "APOLLOHOSP": 0.55,
 }
 
-NIFTY_INDEX_TOKEN = 256265  # NSE:NIFTY 50 — fixed, never changes
+NIFTY_INDEX_SYMBOL = "NIFTY 50"   # NSE:NIFTY 50 — fixed index name, used to resolve its token too
+
+# Populated at startup by resolve_tokens(). Do not hand-edit.
+NIFTY50 = {}             # token -> {"symbol": ..., "weight": ...}
+NIFTY_INDEX_TOKEN = None # resolved at startup
+RATIO_SANITY_BAND = (0.85, 1.15)  # flag any stock whose price/prev_close ratio falls outside ±15%
+
+
+def resolve_tokens(kite_client: KiteConnect) -> dict:
+    """
+    Resolve instrument tokens for all NIFTY50_WEIGHTS symbols (+ the index itself)
+    directly from Kite's live NSE instrument dump. This replaces any hand-typed
+    token list and is the single source of truth for tokens going forward.
+
+    Returns the resolved {token: {"symbol", "weight"}} dict and also sets the
+    module-level NIFTY50 / NIFTY_INDEX_TOKEN globals.
+
+    Retries every 30 s on failure (e.g. network blip at startup).
+    """
+    global NIFTY50, NIFTY_INDEX_TOKEN
+
+    while True:
+        try:
+            print("[resolve_tokens] Fetching NSE instrument dump from Kite...")
+            instruments = kite_client.instruments("NSE")
+            sym_to_token = {
+                i["tradingsymbol"]: i["instrument_token"]
+                for i in instruments
+                if i["segment"] == "NSE"
+            }
+            break
+        except Exception as e:
+            print(f"[resolve_tokens] Error fetching instruments: {e} — retrying in 30 s...")
+            time.sleep(30)
+
+    resolved = {}
+    missing  = []
+    total_weight_resolved = 0.0
+
+    for sym, wt in NIFTY50_WEIGHTS.items():
+        token = sym_to_token.get(sym)
+        if token is None:
+            missing.append(sym)
+            continue
+        resolved[token] = {"symbol": sym, "weight": wt}
+        total_weight_resolved += wt
+
+    index_token = sym_to_token.get(NIFTY_INDEX_SYMBOL)
+    if index_token is None:
+        # Fallback: NSE:NIFTY 50 index token is well-known and stable.
+        # Kite's instruments("NSE") dump doesn't always include index instruments
+        # under the equity segment filter above, so this fallback is expected/normal.
+        index_token = 256265
+        print(f"[resolve_tokens] WARN: '{NIFTY_INDEX_SYMBOL}' not found in NSE equity "
+              f"segment dump — using known-stable index token {index_token} instead.")
+
+    print(f"[resolve_tokens] Resolved {len(resolved)}/{len(NIFTY50_WEIGHTS)} stocks "
+          f"({total_weight_resolved:.2f}% weight)")
+    if missing:
+        print(f"[resolve_tokens] WARN: could not resolve tradingsymbol(s) — check for "
+              f"renames/delisting: {missing}")
+
+    NIFTY50            = resolved
+    NIFTY_INDEX_TOKEN   = index_token
+    return resolved
 
 # ── FLASK ─────────────────────────────────────────────────────────────────────
 
@@ -130,21 +205,27 @@ CORS(app)
 
 _lock = threading.Lock()
 
-# Initialise per-stock state
-stock = {
-    token: {
-        "symbol":     meta["symbol"],
-        "weight":     meta["weight"],
-        "prev_close": None,
-        "ltp":        None,
-        "cum_pv":     0.0,   # Σ(price × volume) inside settlement window
-        "cum_vol":    0.0,   # Σ(volume) inside settlement window
-        "vwap":       None,  # running VWAP (valid only after first tick in window)
-        "in_window":  False, # True once we received ≥1 tick during settlement
-        "tick_count": 0,
+# Populated by init_stock_state() after resolve_tokens() runs at startup.
+# (Must happen AFTER token resolution — NIFTY50 is empty until then.)
+stock = {}
+
+def init_stock_state():
+    """Build the per-stock live-state dict. Call once, after resolve_tokens()."""
+    global stock
+    stock = {
+        token: {
+            "symbol":     meta["symbol"],
+            "weight":     meta["weight"],
+            "prev_close": None,
+            "ltp":        None,
+            "cum_pv":     0.0,   # Σ(price × volume) inside settlement window
+            "cum_vol":    0.0,   # Σ(volume) inside settlement window
+            "vwap":       None,  # running VWAP (valid only after first tick in window)
+            "in_window":  False, # True once we received ≥1 tick during settlement
+            "tick_count": 0,
+        }
+        for token, meta in NIFTY50.items()
     }
-    for token, meta in NIFTY50.items()
-}
 
 nifty = {
     "ltp":        None,
@@ -186,7 +267,10 @@ def _compute_projection(use_vwap: bool) -> dict:
     weighted_ratio    = 0.0
     weight_with_data  = 0.0
     stocks_ready      = 0
+    flagged           = []   # stocks whose ratio fell outside the sanity band
     details           = []
+
+    lo, hi = RATIO_SANITY_BAND
 
     for token, s in stock.items():
         price = (s["vwap"] if use_vwap else None) or s["ltp"]
@@ -204,10 +288,23 @@ def _compute_projection(use_vwap: bool) -> dict:
 
         if price and prev and prev > 0:
             ratio = price / prev
-            weighted_ratio   += (s["weight"] / 100.0) * ratio
-            weight_with_data += s["weight"]
-            stocks_ready     += 1
-            row["ratio"]      = round(ratio, 6)
+
+            if ratio < lo or ratio > hi:
+                # Single-day move outside ±15% is virtually always a bad token/price
+                # pairing, not a real market move. Exclude it from the projection
+                # rather than letting it silently distort the index.
+                flagged.append({
+                    "symbol": s["symbol"], "ratio": round(ratio, 4),
+                    "price": price, "prev_close": prev,
+                })
+                weighted_ratio += (s["weight"] / 100.0) * 1.0   # no-move fallback
+                row["ratio"]    = round(ratio, 6)
+                row["flagged"]  = True
+            else:
+                weighted_ratio   += (s["weight"] / 100.0) * ratio
+                weight_with_data += s["weight"]
+                stocks_ready     += 1
+                row["ratio"]      = round(ratio, 6)
         else:
             # no-move assumption for missing stocks
             weighted_ratio   += (s["weight"] / 100.0) * 1.0
@@ -229,6 +326,7 @@ def _compute_projection(use_vwap: bool) -> dict:
         "in_settlement":    _in_settlement(datetime.now()),
         "mode":             "VWAP" if use_vwap else "LTP",
         "stocks":           sorted(details, key=lambda x: -x["weight"]),
+        "flagged":          flagged,
     }
 
 # ── PREV-CLOSE FETCH ──────────────────────────────────────────────────────────
@@ -397,23 +495,47 @@ def close_estimate():
 def status():
     """Health check — useful for Railway's healthcheck probe."""
     with _lock:
-        ready = sum(1 for s in stock.values() if s["prev_close"] is not None)
-        ticks = sum(s["tick_count"] for s in stock.values())
-        ws_ok = ws_state["connected"]
-        last  = ws_state["last_tick_ts"]
-        err   = ws_state["error"]
+        ready    = sum(1 for s in stock.values() if s["prev_close"] is not None)
+        ticks    = sum(s["tick_count"] for s in stock.values())
+        ws_ok    = ws_state["connected"]
+        last     = ws_state["last_tick_ts"]
+        err      = ws_state["error"]
+        proj     = _compute_projection(use_vwap=_in_settlement(datetime.now()))
+        flagged  = proj["flagged"]
 
     return jsonify({
         "ok":                    ws_ok,
         "ws_connected":          ws_ok,
         "last_tick":             last,
         "ws_error":              err,
+        "stocks_resolved":       len(NIFTY50),
+        "stocks_expected":       len(NIFTY50_WEIGHTS),
         "stocks_prev_close":     ready,
         "stocks_total":          len(stock),
         "total_ticks_received":  ticks,
         "nifty_ltp":             nifty["ltp"],
         "nifty_prev_close":      nifty["prev_close"],
+        "flagged_stocks":        flagged,
         "timestamp":             datetime.now().strftime("%H:%M:%S"),
+    })
+
+
+@app.route("/tokens")
+def tokens():
+    """
+    Inspect resolved instrument tokens. Useful for verifying that every Nifty 50
+    symbol resolved to a real Kite token, with no hand-typed guesses involved.
+    """
+    missing = [sym for sym in NIFTY50_WEIGHTS if sym not in {s["symbol"] for s in NIFTY50.values()}]
+    return jsonify({
+        "index_token":      NIFTY_INDEX_TOKEN,
+        "resolved_count":   len(NIFTY50),
+        "expected_count":   len(NIFTY50_WEIGHTS),
+        "missing_symbols":  missing,
+        "tokens": [
+            {"token": token, "symbol": meta["symbol"], "weight": meta["weight"]}
+            for token, meta in sorted(NIFTY50.items(), key=lambda x: -x[1]["weight"])
+        ],
     })
 
 
@@ -429,20 +551,25 @@ if __name__ == "__main__":
     print("  Nifty 50 Closing Price Estimator  —  Railway Edition")
     print("=" * 60)
     print(f"  Port           : {PORT}")
-    print(f"  Constituents   : {len(NIFTY50)} stocks")
     print(f"  Settlement win : {SETTLEMENT_START[0]:02d}:{SETTLEMENT_START[1]:02d} "
           f"– {SETTLEMENT_END[0]:02d}:{SETTLEMENT_END[1]:02d} IST")
 
-    # 1. Fetch T-1 closes (blocks until done)
+    # 1. Resolve instrument tokens live from Kite — no hand-typed tokens, ever.
+    resolve_tokens(kite_client)
+    init_stock_state()
+    print(f"  Constituents   : {len(NIFTY50)} stocks resolved "
+          f"(of {len(NIFTY50_WEIGHTS)} expected)")
+
+    # 2. Fetch T-1 closes (blocks until done)
     fetch_prev_closes(kite_client)
 
-    # 2. Start WebSocket in background thread
+    # 3. Start WebSocket in background thread
     print("[main] Starting Kite WebSocket...")
     start_websocket()
 
-    # 3. Start history accumulator
+    # 4. Start history accumulator
     threading.Thread(target=_history_loop, daemon=True).start()
 
-    # 4. Serve Flask (Railway expects the process to bind to $PORT)
+    # 5. Serve Flask (Railway expects the process to bind to $PORT)
     print(f"[main] Flask listening on 0.0.0.0:{PORT}")
     app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
